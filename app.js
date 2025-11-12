@@ -1,54 +1,9 @@
-// // generateAmazonUrls.js
-// // Usage: node generateAmazonUrls.js inputFile [outputFile]
-// // Example: node generateAmazonUrls.js asins.txt amazon_urls.txt
-
-// const fs = require('fs');
-// const path = require('path');
-
-// const inputFile = process.argv[2] || 'asins.txt';
-// const outputFile = process.argv[3] || 'amazon_urls.txt';
-
-// function isValidAsin(asin) {
-//   return /^[A-Za-z0-9]{10}$/.test(asin.trim());
-// }
-
-// async function main() {
-//   try {
-//     const data = await fs.promises.readFile(path.resolve(inputFile), 'utf8');
-//     const asins = data
-//       .split(/\r?\n/)
-//       .map(a => a.trim())
-//       .filter(a => a.length > 0 && isValidAsin(a));
-
-//     if (asins.length === 0) {
-//       console.log('No valid ASINs found in file.');
-//       return;
-//     }
-
-//     // Generate URLs
-//     const urls = asins.flatMap(asin => [
-//       `https://www.amazon.in/dp/${asin}`,
-//       `https://www.amazon.co.uk/dp/${asin}`
-//     ]);
-
-//     // Write URLs to output file
-//     await fs.promises.writeFile(path.resolve(outputFile), urls.join('\n'), 'utf8');
-//     console.log(`✅ URLs written to ${outputFile} (${urls.length} total)`);
-//   } catch (err) {
-//     console.error('Error:', err.message);
-//   }
-// }
-
-// main();
-
-// index.js
-const fs = require('fs').promises;
-const path = require('path');
-const puppeteer = require('puppeteer-extra'); // using puppeteer-extra for stealth if available
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const pLimit = require('p-limit').default;
-const createCsvWriter = require('csv-writer').createObjectCsvWriter;
-
+import fs from 'fs/promises';
+import path from 'path';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import pLimit from 'p-limit';
+import pkg from 'csv-writer';
 puppeteer.use(StealthPlugin());
 
 const INPUT_FILE = 'asins.txt';
@@ -272,10 +227,10 @@ async function main() {
   await browser.close();
 
   // save json
-  await fs.writeFile(OUTPUT_JSON, JSON.stringify(results, null, 2), 'utf8');
+  await fs.writeFile(OUTPUT_JSON, JSON.stringify(results, null, 2));
 
   // save csv
-  const csvWriter = createCsvWriter({
+  const csvWriter = pkg.createObjectCsvWriter({
     path: OUTPUT_CSV,
     header: [
       {id: 'asin', title: 'ASIN'},
