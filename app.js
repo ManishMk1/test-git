@@ -13,7 +13,7 @@ const OUTPUT_CSV = 'results.csv';
 // change if you want another amazon domain (amazon.in, amazon.co.uk, amazon.com)
 const AMAZON_DOMAIN = 'amazon.in';
 
-const concurrency = 3; // number of pages at once
+const concurrency = 8; // number of pages at once
 const timeout = 30_000;
 
 function amazonUrlFromAsin(asin) {
@@ -23,6 +23,10 @@ function amazonUrlFromAsin(asin) {
 // helper: random delay
 function delay(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+function cleanUnicode(str) {
+  if (!str || typeof str !== 'string') return str;
+  return str.replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
 }
 
 // fallback helpers for multiple selectors
@@ -79,14 +83,22 @@ async function scrapeAsin(page, asin) {
     ]);
 
     // Price — many possible selectors
-    const price = await getText(page, [
-      '#priceblock_ourprice',
-      '#priceblock_dealprice',
-      'span.a-size-medium.a-color-price.offer-price.a-text-normal',
-      'span.a-price > span.a-offscreen',
-      '#corePriceDisplay_desktop_feature_div .a-offscreen'
-    ]);
-
+    let price = null;
+    try {
+      // This selector is more reliable for the main price part
+      const priceWhole = await getText(page, ['.a-price-whole']);
+      if (priceWhole) {
+        const priceSymbol = await getText(page, ['.a-price-symbol']);
+        price = `${priceSymbol || ''}${priceWhole}`;
+      } else {
+        // Fallback to older selectors if the main one fails
+        price = await getText(page, [
+          '#priceblock_ourprice',
+          '#priceblock_dealprice',
+          '#corePriceDisplay_desktop_feature_div .a-offscreen'
+        ]);
+      }
+    } catch (e) { /* ignore */ }
     // Rating (stars)
     const rating = await getText(page, [
       'span#acrPopover',
@@ -108,38 +120,94 @@ async function scrapeAsin(page, asin) {
               await getAttr(page, '#imgTagWrapperId img', 'data-old-hires');
     }
 
+    // "About this item" bullet points
+ // "About this item" bullet points
+let aboutItem = null;
+try {
+  // Try both feature-bullets and generic unordered list patterns
+  await page.waitForSelector('ul.a-unordered-list.a-vertical.a-spacing-small, #feature-bullets', { timeout: 3000 });
+
+  // Collect all possible bullet list items from both selectors
+  const bulletItems = await page.$$('ul.a-unordered-list.a-vertical.a-spacing-small li, #feature-bullets .a-list-item');
+  if (bulletItems.length > 0) {
+    const texts = await Promise.all(
+      bulletItems.map(el => el.evaluate(node => node.textContent.trim().replace(/\s+/g, ' ')))
+    );
+    // Filter out empty lines
+    aboutItem = texts.filter(text => text.length > 0);
+  }
+} catch (e) {
+  /* ignore */
+}
+
+    // "Product Description" paragraph
+    let productDescription = null;
+    try {
+      await page.waitForSelector('#productDescription', { timeout: 3000 });
+      productDescription = await getText(page, ['#productDescription']);
+    } catch (e) { /* ignore */ }
+
     // Availability / stock
     const availability = await getText(page, [
       '#availability .a-color-state',
       '#availability .a-color-success',
       '#availability'
     ]);
-
-    // Best Sellers Rank (BSR) — tricky: inside Product details or "Best Sellers Rank"
-    let bsr = null;
+    
+    // Product Details and Best Sellers Rank (BSR)
+    let productDetails = {};
+    let bsr = null; 
     try {
-      // scroll into view to ensure the details are loaded
-      await page.evaluate(() => window.scrollBy(0, window.innerHeight));
-      bsr = await getText(page, [
-        '#detailBulletsWrapper_feature_div li:has(span:contains("Best Sellers Rank"))', // not supported CSS in browsers but left for concept
-        '#detailBullets_feature_div',
-        '#productDetails_detailBullets_sections1',
-        '#prodDetails'
-      ]);
+        await page.evaluate(() => window.scrollBy(0, window.innerHeight)); // Scroll to load details
+        await delay(200); // wait for content to potentially load
 
-      if (bsr) {
-        // try to extract "Best Sellers Rank" from returned text
-        const m = bsr.match(/Best Sellers Rank[:\s]*([\s\S]+)/i);
-        if (m) bsr = m[1].trim();
-      } else {
-        // try another approach: search the page text
-        const txt = await page.evaluate(() => document.body.innerText);
-        const m2 = txt.match(/Best Sellers Rank[:\s]*([\s\S]{0,200})/i);
-        if (m2) bsr = m2[1].split('\n')[0].trim();
-      }
-    } catch (e) {
-      bsr = null;
-    }
+        const details = await page.evaluate(() => {
+            const data = {};
+            const cleanText = (str) => str.replace(/:/g, '').replace(/\s\s+/g, ' ').trim();
+
+            // First, try the modern "detailBullets" format
+            const detailLines = Array.from(document.querySelectorAll('#detailBullets_feature_div li'));
+            if (detailLines.length) {
+                detailLines.forEach(li => {
+                    const keyEl = li.querySelector('span.a-text-bold');
+                    if (keyEl) {
+                        const key = cleanText(keyEl.textContent);
+                        // The value is in the span that follows the key's span
+                        const valueEl = keyEl.parentElement.querySelector('span:not(.a-text-bold)');
+                        if (valueEl) {
+                            data[key] = cleanText(valueEl.textContent);
+                        } else {
+                            // Fallback if structure is different
+                            data[key] = cleanText(li.textContent.replace(keyEl.textContent, ''));
+                        }
+                    }
+                });
+                return data;
+            }
+
+            // Fallback for older table-based layouts
+            const tableRows = Array.from(document.querySelectorAll('#productDetails_detailBullets_sections1 tr, #prodDetails tr'));
+            if (tableRows.length) {
+                tableRows.forEach(row => {
+                   const th = row.querySelector('th');
+                   const td = row.querySelector('td');
+                   if (th && td) {
+                       data[cleanText(th.innerText)] = cleanText(td.innerText);
+                   }
+               });
+               return data;
+            }
+
+            return data;
+        });
+        productDetails = cleanUnicode(details);
+        // Extract BSR from the collected details
+        const bsrKey = Object.keys(productDetails).find(k => k.toLowerCase().includes('best sellers rank'));
+        if (bsrKey) {
+            // Clean up the BSR string
+            bsr = productDetails[bsrKey].split('(')[0].trim();
+        }
+    } catch (e) { /* ignore */ }
 
     return {
       asin,
@@ -149,17 +217,21 @@ async function scrapeAsin(page, asin) {
       rating,
       reviewsCount,
       image,
+      aboutItem,
+      productDescription,
       availability,
       bsr,
+      productDetails,
       scrapedAt: new Date().toISOString(),
       error: null
     };
   } catch (err) {
     return {
       asin, url, title: null, price: null, rating: null, reviewsCount: null,
-      image: null, availability: null, bsr: null, scrapedAt: new Date().toISOString(),
+      image: null, aboutItem: null, productDescription: null, availability: null, bsr: null, productDetails: null,
+      scrapedAt: new Date().toISOString(),
       error: err.message
-    };
+    }
   }
 }
 
@@ -184,12 +256,9 @@ async function main() {
   const browser = await puppeteer.launch({
   headless: true,
   args: [
-    '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-dev-shm-usage',
-    '--disable-gpu',
-    '--no-zygote',
-    '--single-process'
+    '--no-sandbox', // Necessary for many environments
+    '--disable-setuid-sandbox', // Increases compatibility
+    '--disable-dev-shm-usage' // Prevents memory-related crashes in Docker/CI
   ]
 });
 
@@ -242,14 +311,22 @@ async function main() {
       {id: 'price', title: 'Price'},
       {id: 'rating', title: 'Rating'},
       {id: 'reviewsCount', title: 'Reviews'},
+      {id: 'aboutItem', title: 'About Item'},
+      {id: 'productDescription', title: 'Product Description'},
       {id: 'image', title: 'Image'},
       {id: 'availability', title: 'Availability'},
       {id: 'bsr', title: 'BSR'},
       {id: 'url', title: 'URL'},
+      {id: 'productDetails', title: 'Product Details'},
       {id: 'error', title: 'Error'}
     ]
   });
-  await csvWriter.writeRecords(results);
+  // Convert array fields to strings for CSV
+  const records = results.map(r => ({
+    ...r,
+    aboutItem: r.aboutItem ? r.aboutItem.join(' | ') : ''
+  }));
+  await csvWriter.writeRecords(records);
   console.log(`Saved ${results.length} results to ${OUTPUT_JSON} and ${OUTPUT_CSV}`);
 }
 
