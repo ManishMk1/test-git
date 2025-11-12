@@ -13,7 +13,7 @@ const OUTPUT_CSV = 'results.csv';
 // change if you want another amazon domain (amazon.in, amazon.co.uk, amazon.com)
 const AMAZON_DOMAIN = 'amazon.in';
 
-const concurrency = 8; // number of pages at once
+const concurrency = 3; // number of pages at once
 const timeout = 30_000;
 
 function amazonUrlFromAsin(asin) {
