@@ -1,0 +1,9 @@
+{
+  "dependencies": {
+    "csv-writer": "^1.6.0",
+    "p-limit": "^7.2.0",
+    "puppeteer": "^24.29.1",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  }
+}
