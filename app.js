@@ -182,13 +182,17 @@ async function main() {
   console.log(`Found ${asins.length} ASIN(s). Starting scraping with concurrency=${concurrency}`);
 
   const browser = await puppeteer.launch({
-    headless: true, // set to false to see browser
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage'
-    ]
-  });
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-gpu',
+    '--no-zygote',
+    '--single-process'
+  ]
+});
+
 
   // concurrency control
   const limit = pLimit(concurrency);
