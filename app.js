@@ -10,15 +10,12 @@ const INPUT_FILE = 'asins.txt';
 const OUTPUT_JSON = 'results.json';
 const OUTPUT_CSV = 'results.csv';
 
-// change if you want another amazon domain (amazon.in, amazon.co.uk, amazon.com)
-const AMAZON_DOMAIN = 'amazon.in';
+// Add domains you want to scrape
+const AMAZON_DOMAINS = ['amazon.in', 'amazon.co.uk'];
 
 const concurrency = 3; // number of pages at once
 const timeout = 30_000;
 
-function amazonUrlFromAsin(asin) {
-  return `https://${AMAZON_DOMAIN}/dp/${asin}`;
-}
 
 // helper: random delay
 function delay(ms) {
@@ -54,8 +51,8 @@ async function getAttr(page, selector, attr) {
   }
 }
 
-async function scrapeAsin(page, asin) {
-  const url = amazonUrlFromAsin(asin);
+async function scrapeUrl(page, url) {
+  const asin = url.split('/dp/')[1].split('/')[0];
   try {
     await page.setUserAgent(randomUserAgent());
     await page.setExtraHTTPHeaders({ 'Accept-Language': 'en-US,en;q=0.9' });
@@ -200,7 +197,7 @@ try {
 
             return data;
         });
-        productDetails = cleanUnicode(details);
+        productDetails = details;
         // Extract BSR from the collected details
         const bsrKey = Object.keys(productDetails).find(k => k.toLowerCase().includes('best sellers rank'));
         if (bsrKey) {
@@ -249,53 +246,68 @@ async function readAsins() {
   return txt.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
 }
 
+function generateUrls(asins) {
+  const urls = [];
+  for (const asin of asins) {
+    for (const domain of AMAZON_DOMAINS) {
+      urls.push(`https://www.${domain}/dp/${asin}`);
+    }
+  }
+  return urls;
+}
+
 async function main() {
   const asins = await readAsins();
-  console.log(`Found ${asins.length} ASIN(s). Starting scraping with concurrency=${concurrency}`);
+  const urlsToScrape = generateUrls(asins);
+  console.log(`Found ${asins.length} ASIN(s) for ${AMAZON_DOMAINS.length} domains. Total URLs to scrape: ${urlsToScrape.length}`);
 
   const browser = await puppeteer.launch({
-  headless: true,
-  args: [
-    '--no-sandbox', // Necessary for many environments
-    '--disable-setuid-sandbox', // Increases compatibility
-    '--disable-dev-shm-usage' // Prevents memory-related crashes in Docker/CI
-  ]
-});
-
+    headless: true,
+    args: [
+      '--no-sandbox', // Necessary for many environments
+      '--disable-setuid-sandbox', // Increases compatibility
+      '--disable-dev-shm-usage' // Prevents memory-related crashes in Docker/CI
+    ]
+  });
 
   // concurrency control
   const limit = pLimit(concurrency);
   const results = [];
+  const batchSize = 50;
 
-  const tasks = asins.map(asin => limit(async () => {
-    const page = await browser.newPage();
-    // set viewport & UA
-    await page.setViewport({ width: 1200, height: 800 });
-    try {
-      // try up to 2 times if it fails
-      for (let attempt = 1; attempt <= 2; attempt++) {
-        const r = await scrapeAsin(page, asin);
-        if (!r.error) {
-          results.push(r);
-          console.log(`OK  ${asin} -> ${r.title ? r.title.slice(0,60) : 'NO TITLE'}`);
-          break;
-        } else {
-          console.warn(`Attempt ${attempt} failed for ${asin}: ${r.error}`);
-          if (attempt === 2) {
+  for (let i = 0; i < urlsToScrape.length; i += batchSize) {
+    const batch = urlsToScrape.slice(i, i + batchSize);
+    console.log(`Processing batch ${Math.floor(i / batchSize) + 1} of ${Math.ceil(urlsToScrape.length / batchSize)}...`);
+
+    const tasks = batch.map(url => limit(async () => {
+      const page = await browser.newPage();
+      await page.setViewport({ width: 1200, height: 800 });
+      try {
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          const r = await scrapeUrl(page, url);
+          if (!r.error) {
             results.push(r);
+            console.log(`OK  ${r.asin} (${new URL(r.url).hostname}) -> ${r.title ? r.title.slice(0, 40) : 'NO TITLE'}`);
+            break;
           } else {
-            await delay(1500 + Math.random() * 2000);
+            console.warn(`Attempt ${attempt} failed for ${url}: ${r.error}`);
+            if (attempt === 2) results.push(r);
+            else await delay(1500 + Math.random() * 2000);
           }
         }
+      } finally {
+        await page.close();
+        await delay(300 + Math.floor(Math.random() * 400));
       }
-    } finally {
-      await page.close();
-      // small delay between closing and next create to look less bot-like
-      await delay(300 + Math.floor(Math.random() * 400));
-    }
-  }));
+    }));
 
-  await Promise.all(tasks);
+    await Promise.all(tasks);
+
+    if (i + batchSize < urlsToScrape.length) {
+      console.log(`Batch finished. Sleeping for 30 seconds...`);
+      await delay(30000);
+    }
+  }
 
   await browser.close();
 
